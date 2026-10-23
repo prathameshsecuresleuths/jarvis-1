@@ -24,7 +24,7 @@ import { visionServer } from './vision.mjs'
 import { huginnConfigured, huginnServer } from './huginn.mjs'
 import { openServer } from './open.mjs'
 import { homedir, tmpdir } from 'node:os'
-import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
@@ -99,6 +99,39 @@ function originAllowed(origin) {
  * without it, and turn it on once you trust what you're demoing.
  */
 const ALLOW_WRITES = process.env.JARVIS_ALLOW_WRITES === '1'
+
+/**
+ * The Claude Code the agent runs on: the one installed on this machine when
+ * there is one, not the copy bundled inside the SDK package.
+ *
+ * The bundled copy is pinned to whatever the SDK shipped with and falls behind
+ * the installed CLI by dozens of releases. MCP sign-ins are the visible cost:
+ * an OAuth server signed in with `/mcp` (Google Calendar, say) is stored by
+ * the installed CLI in a form the older bundled one does not pick up, so the
+ * server is listed but never connects. Running the installed binary also
+ * brings the claude.ai account connectors along, still behind decideTool.
+ * JARVIS_CLAUDE_PATH overrides; unset and nothing found, the SDK's own is used.
+ */
+function installedClaude() {
+  const named = process.env.JARVIS_CLAUDE_PATH
+  if (named) return named
+  const exe = process.platform === 'win32' ? 'claude.exe' : 'claude'
+  const dirs = [
+    join(homedir(), '.local', 'bin'),
+    ...(process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':'),
+  ]
+  for (const dir of dirs) {
+    if (!dir) continue
+    const candidate = join(dir, exe)
+    try {
+      // A real file, not the npm .cmd shim, which cannot be spawned directly.
+      if (statSync(candidate).isFile()) return candidate
+    } catch {}
+  }
+  return undefined
+}
+
+const CLAUDE_PATH = installedClaude()
 
 /**
  * Huginn's write tools (run, create, change, pause) on their own switch, so
@@ -1113,6 +1146,7 @@ if (HOST === '127.0.0.1') {
 }
 
 console.log(`[jarvis] bridge listening on ws://localhost:${PORT} (${HOST}${HOST === '127.0.0.1' ? ' + ::1' : ''})`)
+console.log(`[jarvis] agent runs on ${CLAUDE_PATH ?? 'the Claude Code bundled with the SDK'}`)
 if (!['127.0.0.1', '::1', 'localhost'].includes(HOST)) {
   console.warn(`[jarvis] WARNING: JARVIS_HOST=${HOST} exposes the agent beyond this machine`)
 }
@@ -1368,6 +1402,7 @@ wss.on('connection', (socket) => {
       // The cost is that MCP servers stop being discovered too, which is why
       // mcpServers above passes them in by hand.
       settingSources: [],
+      ...(CLAUDE_PATH ? { pathToClaudeCodeExecutable: CLAUDE_PATH } : {}),
       // Stated explicitly, and it has to be.
       //
       // With no `model` here the SDK falls back to its own default, which on
@@ -1518,7 +1553,14 @@ wss.on('connection', (socket) => {
                 .filter((s) => s.status !== 'needs-auth' && s.status !== 'failed')
                 .map((s) => s.name)
               send({ type: 'ready', servers: usable })
-              console.log(`[jarvis] ${usable.length} MCP servers available`)
+              console.log(`[jarvis] ${usable.length} MCP servers available (Claude Code ${msg.claude_code_version ?? '?'})`)
+              // Name the ones that are not, and why: "listed but no tools" is
+              // otherwise indistinguishable from "never configured".
+              for (const s of msg.mcp_servers ?? []) {
+                if (s.status === 'needs-auth' || s.status === 'failed') {
+                  console.log(`[jarvis]   ${s.name}: ${s.status}${s.status === 'needs-auth' ? ' (run claude, then /mcp, to sign in)' : ''}`)
+                }
+              }
             }
             break
         }
