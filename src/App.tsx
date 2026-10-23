@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Scene } from './scene/Scene'
 import { Hud } from './ui/Hud'
+import { TypeBox } from './ui/TypeBox'
 import { Boot } from './ui/Boot'
 import { Ignition } from './ui/Ignition'
 import { Diagnostics } from './ui/Diagnostics'
@@ -306,6 +307,15 @@ export default function App() {
     }
 
     void respond(said)
+  }
+
+  /** A typed line. Unlike speech it also wakes him from dormant, and it cuts
+   *  off whatever he is saying the same way talking over him does. */
+  const onTyped = (text: string) => {
+    const phase = store.getState().phase
+    if (phase === 'offline' || phase === 'boot') return
+    onSpeechStart()
+    void respond(text)
   }
 
   const onPartial = (text: string) => {
@@ -699,6 +709,7 @@ export default function App() {
     <>
       <Scene />
       <Hud />
+      <TypeBox onSend={onTyped} />
       <Boot />
       <Diagnostics />
       <Ignition onStart={() => void powerOn()} />
