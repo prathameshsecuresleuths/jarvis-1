@@ -142,6 +142,15 @@ function installedClaude() {
 
 const CLAUDE_PATH = installedClaude()
 
+/**
+ * JARVIS_HEADLESS=1: running on a server nobody sits at (the always-on box),
+ * reached from a phone. Opening links, bringing up Slack and driving Chrome
+ * all act on the machine the bridge runs on, so there they would act on a
+ * screen no one is looking at. Leaving them out is clearer than letting them
+ * fail, and the model then answers "do that from the laptop" instead.
+ */
+const HEADLESS = process.env.JARVIS_HEADLESS === '1'
+
 const MCP_DEBUG_FILE =
   process.env.JARVIS_DEBUG_MCP === '1' ? join(homedir(), '.jarvis', 'mcp-debug.log') : null
 
@@ -1180,7 +1189,8 @@ console.log(
 // at all because an extension that is simply not running is indistinguishable
 // at the tool boundary from one that is broken, and this is the one place the
 // difference can be stated before anybody asks a question that depends on it.
-void chromeAvailable().then((ok) => {
+if (HEADLESS) console.log('[jarvis] headless: no links, Slack app or Chrome control on this machine')
+else void chromeAvailable().then((ok) => {
   console.log(
     ok
       ? `[jarvis] browser control ready${ALLOW_WRITES ? '' : ' (reading only — clicking and typing need JARVIS_ALLOW_WRITES=1)'}`
@@ -1378,13 +1388,13 @@ wss.on('connection', (socket) => {
         // The user's own Chrome, over the extension's native-host socket. It
         // holds no per-connection state, but it is built here with the rest so
         // the write gate is read once, at the same point as everything else.
-        jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES }),
+        ...(HEADLESS ? {} : { jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES }) }),
         // The camera, which unlike everything else here has to ask and wait.
         jarvis_eyes: visionServer(ask),
         // Standing automations on the user's Huginn, when it is configured.
         ...(huginnConfigured() ? { jarvis_huginn: huginnServer(ask) } : {}),
         // Open a link in the user's own browser, approved on screen each time.
-        jarvis_open: openServer(ask),
+        ...(HEADLESS ? {} : { jarvis_open: openServer(ask) }),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
