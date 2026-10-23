@@ -25,6 +25,7 @@ import { join } from 'node:path'
  *        ↕  Chrome Native Messaging: 4-byte little-endian length + JSON
  *   chrome-native-host
  *        ↕  Unix socket: /tmp/claude-mcp-browser-bridge-<user>/<pid>.sock
+ *           (Windows: named pipe \\.\pipe\claude-mcp-browser-bridge-<user>)
  *   whoever connects  ← this file
  *
  * What Claude Code normally does at that last step is detour through
@@ -56,6 +57,54 @@ import { join } from 'node:path'
 const SOCKET_DIR = `/tmp/claude-mcp-browser-bridge-${userInfo().username}`
 
 /**
+ * Windows has no /tmp socket directory: the native host listens on a named
+ * pipe instead, and — unlike Unix — on one fixed name with no pid in it,
+ * `\\.\pipe\claude-mcp-browser-bridge-<user>`. That is read straight off the
+ * Claude Code CLI (2.1.309), whose own client resolves the Windows candidate
+ * list to exactly that single pipe, so there is no "which of several is live"
+ * question to answer here.
+ *
+ * The username is resolved the way the host resolves it — os.userInfo(), then
+ * USER / USERNAME, then "default" — because the pipe name is the only thing
+ * tying us to it, and a mismatch would look exactly like a missing extension.
+ */
+export function windowsPipePath(username) {
+  return `\\\\.\\pipe\\claude-mcp-browser-bridge-${username || 'default'}`
+}
+
+function windowsUsername() {
+  try {
+    return userInfo().username || 'default'
+  } catch {
+    return process.env.USER || process.env.USERNAME || 'default'
+  }
+}
+
+/**
+ * Is the pipe there?
+ *
+ * Listing `\\.\pipe\` answers that without dialling, so the boot-log check
+ * does not open (and then drop) a connection on the native host. Pipe names
+ * are case-insensitive on Windows, so the comparison is too. If the listing
+ * itself fails we cannot tell, and hand back the path anyway: connecting is
+ * already soft-failing, so a wrong "maybe" costs one plain error, whereas a
+ * wrong "no" would hide a browser that is actually there.
+ *
+ * `list` is injectable only so the decision can be checked off Windows.
+ */
+export async function findWindowsPipe(username = windowsUsername(), list = readdir) {
+  const path = windowsPipePath(username)
+  const want = path.slice('\\\\.\\pipe\\'.length).toLowerCase()
+  let names
+  try {
+    names = await list('\\\\.\\pipe\\')
+  } catch {
+    return path
+  }
+  return names.some((n) => String(n).toLowerCase() === want) ? path : null
+}
+
+/**
  * How long a single browser action may take.
  *
  * Generous because these are real page loads on a real network, and the failure
@@ -82,6 +131,7 @@ const CONNECT_TIMEOUT_MS = 3_000
  * accepted as a last resort, because on some setups it is all there is.
  */
 async function findSocket() {
+  if (process.platform === 'win32') return findWindowsPipe()
   let names
   try {
     names = await readdir(SOCKET_DIR)
