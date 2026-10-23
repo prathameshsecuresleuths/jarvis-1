@@ -22,6 +22,7 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { huginnConfigured, huginnServer } from './huginn.mjs'
+import { openServer } from './open.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
@@ -291,6 +292,10 @@ function decideTool(name) {
     // Huginn decides by verb before the generic veto, which would read
     // `create_automation` as a world-changing write and hold it behind the
     // global switch rather than Huginn's own.
+    // Opening a link asks the user on screen every time (see open.mjs), so the
+    // dialog is the gate rather than the write switch.
+    if (server === 'jarvis_open') return true
+
     if (server === 'jarvis_huginn') {
       return READ_VERB.test(mcpToolOf(name)) ? true : HUGINN_WRITES
     }
@@ -1331,6 +1336,8 @@ wss.on('connection', (socket) => {
         jarvis_eyes: visionServer(ask),
         // Standing automations on the user's Huginn, when it is configured.
         ...(huginnConfigured() ? { jarvis_huginn: huginnServer(ask) } : {}),
+        // Open a link in the user's own browser, approved on screen each time.
+        jarvis_open: openServer(ask),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
