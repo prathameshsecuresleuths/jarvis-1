@@ -34,6 +34,8 @@ type Frame = {
   mode?: string
   seconds?: number
   when?: string
+  title?: string
+  details?: string
   servers?: Array<string | { name?: string }>
 }
 
@@ -202,6 +204,16 @@ function dispatch(ws: WebSocket) {
         })
           .then(reply)
           .catch((err) => reply({ error: String(err?.message ?? err) }))
+      }
+    } else if (msg.type === 'confirm' && msg.id) {
+      // A change only the user can approve — today, a Huginn automation being
+      // created or changed. A native dialog on purpose: nothing the model says
+      // can answer it, and it shows the exact payload rather than a summary.
+      const approved = window.confirm(
+        `${msg.title ?? 'Approve this change?'}\n\n${msg.details ?? ''}`,
+      )
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'reply', id: msg.id, ok: approved }))
       }
     } else if (msg.type === 'ui' && msg.op) {
       // A `ui` frame with no args is normal — reset and clear take none — so an

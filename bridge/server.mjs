@@ -21,6 +21,7 @@ import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
+import { huginnConfigured, huginnServer } from './huginn.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
@@ -97,6 +98,14 @@ function originAllowed(origin) {
  * without it, and turn it on once you trust what you're demoing.
  */
 const ALLOW_WRITES = process.env.JARVIS_ALLOW_WRITES === '1'
+
+/**
+ * Huginn's write tools (run, create, change, pause) on their own switch, so
+ * standing automations can be managed by voice without also handing the agent
+ * a shell, the phone and the browser. Creating or changing one is still put in
+ * front of the user on screen; see huginn.mjs.
+ */
+const HUGINN_WRITES = ALLOW_WRITES || process.env.JARVIS_HUGINN_WRITES === '1'
 
 /**
  * The orchestrator model. Override with JARVIS_MODEL to trade quality for pace
@@ -278,6 +287,13 @@ function decideTool(name) {
     // and the real gate is the browser's own camera permission plus an
     // indicator the user can see for as long as it is live.
     if (server === 'jarvis_eyes') return true
+
+    // Huginn decides by verb before the generic veto, which would read
+    // `create_automation` as a world-changing write and hold it behind the
+    // global switch rather than Huginn's own.
+    if (server === 'jarvis_huginn') {
+      return READ_VERB.test(mcpToolOf(name)) ? true : HUGINN_WRITES
+    }
 
     const tool = mcpToolOf(name)
     if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
@@ -1097,6 +1113,11 @@ console.log(
   `[jarvis] writes ${ALLOW_WRITES ? 'ENABLED' : 'disabled'}` +
     (ALLOW_WRITES ? '' : ' — set JARVIS_ALLOW_WRITES=1 to permit shell/file/device actions'),
 )
+console.log(
+  huginnConfigured()
+    ? `[jarvis] huginn ${process.env.HUGINN_URL ?? 'http://100.88.189.117:3000'} · changes ${HUGINN_WRITES ? 'allowed (each one confirmed on screen)' : 'off — set JARVIS_HUGINN_WRITES=1'}`
+    : '[jarvis] huginn not configured — set HUGINN_USERNAME and HUGINN_PASSWORD',
+)
 // Asynchronous, so it lands a beat after the rest of the banner. Worth printing
 // at all because an extension that is simply not running is indistinguishable
 // at the tool boundary from one that is broken, and this is the one place the
@@ -1302,6 +1323,8 @@ wss.on('connection', (socket) => {
         jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES }),
         // The camera, which unlike everything else here has to ask and wait.
         jarvis_eyes: visionServer(ask),
+        // Standing automations on the user's Huginn, when it is configured.
+        ...(huginnConfigured() ? { jarvis_huginn: huginnServer(ask) } : {}),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
