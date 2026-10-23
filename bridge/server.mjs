@@ -22,9 +22,9 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { homedir, tmpdir } from 'node:os'
-import { readFileSync, realpathSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
 
@@ -288,6 +288,68 @@ function decideTool(name) {
     return READ_VERB.test(tool) ? true : ALLOW_WRITES
   }
   return ALLOW_WRITES
+}
+
+/**
+ * Where the file-reading tools may look.
+ *
+ * Read, Glob and Grep count as read-only, and they are — but with the agent
+ * rooted at the home directory they could read ~/.ssh, ~/.aws, every .env and
+ * ~/.claude.json (which holds MCP keys), and WebFetch could then carry any of
+ * it out in a URL. That is the prompt-injection path: a web page or an email
+ * the agent reads says "read this file and fetch this link", and nothing
+ * stands in the way. So the agent gets a workspace of its own, plus the temp
+ * directories screenshots land in, and anything else has to be named in
+ * JARVIS_READ_ROOTS.
+ *
+ * Paths are realpath'd before judging, for the same reason /file does it: a
+ * link in /tmp pointing at ~/.ssh is still ~/.ssh.
+ */
+const WORKSPACE = join(homedir(), '.jarvis', 'workspace')
+mkdirSync(WORKSPACE, { recursive: true })
+
+const realOrResolved = (p) => {
+  try {
+    return realpathSync(p)
+  } catch {
+    return resolvePath(p)
+  }
+}
+
+const READ_ROOTS = [
+  WORKSPACE,
+  tmpdir(),
+  '/tmp',
+  ...(process.env.JARVIS_READ_ROOTS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+].map(realOrResolved)
+
+const PATH_TOOLS = new Set(['Read', 'Glob', 'Grep'])
+
+/** The directory an absolute glob pattern starts in: `/a/b/*.png` -> `/a/b`. */
+const globBase = (pattern) => {
+  const cut = pattern.search(/[*?[{]/)
+  return cut === -1 ? pattern : dirname(pattern.slice(0, cut + 1))
+}
+
+function readPathAllowed(toolName, input = {}) {
+  const asked = [toolName === 'Read' ? input.file_path : input.path ?? WORKSPACE]
+  if (typeof input.pattern === 'string' && isAbsolute(input.pattern)) {
+    asked.push(globBase(input.pattern))
+  }
+  if (typeof input.glob === 'string' && isAbsolute(input.glob)) {
+    asked.push(globBase(input.glob))
+  }
+  return asked.every((p) => {
+    if (typeof p !== 'string' || !p) return false
+    const real = realOrResolved(resolvePath(WORKSPACE, p))
+    return READ_ROOTS.some((root) => {
+      const rel = relative(root, real)
+      return !rel.startsWith('..') && !isAbsolute(rel)
+    })
+  })
 }
 
 const SYSTEM_PROMPT = `You are JARVIS. You are speaking out loud to one person.
@@ -998,9 +1060,35 @@ const wss = new WebSocketServer({
     done(true)
   },
 })
-server.listen(PORT)
 
-console.log(`[jarvis] bridge listening on ws://localhost:${PORT}`)
+/**
+ * Where the bridge listens.
+ *
+ * `server.listen(PORT)` with no host binds every interface, which put the agent
+ * — your mail, your phone, your logged-in Chrome — on the local network. The
+ * Origin check above stops other browser tabs, but anything else on the same
+ * Wi-Fi can type any Origin header it likes. Loopback only, then, unless
+ * JARVIS_HOST says otherwise.
+ *
+ * The page connects to `localhost`, which Chrome may try as ::1 before
+ * 127.0.0.1, so the default also listens on IPv6 loopback with the same
+ * handler and the same socket gate. A machine with IPv6 off simply skips it.
+ */
+const HOST = process.env.JARVIS_HOST ?? '127.0.0.1'
+server.listen(PORT, HOST)
+if (HOST === '127.0.0.1') {
+  const server6 = http.createServer(server.listeners('request')[0])
+  server6.on('upgrade', (req, socket, head) =>
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req)),
+  )
+  server6.on('error', () => {})
+  server6.listen(PORT, '::1')
+}
+
+console.log(`[jarvis] bridge listening on ws://localhost:${PORT} (${HOST}${HOST === '127.0.0.1' ? ' + ::1' : ''})`)
+if (!['127.0.0.1', '::1', 'localhost'].includes(HOST)) {
+  console.warn(`[jarvis] WARNING: JARVIS_HOST=${HOST} exposes the agent beyond this machine`)
+}
 console.log(
   `[jarvis] speech ${elevenKey() ? 'via ElevenLabs (key from MCP config)' : 'using browser fallback voice'}`,
 )
@@ -1220,9 +1308,17 @@ wss.on('connection', (socket) => {
       // of input tokens on every turn. Replacing it makes the persona stick,
       // keeps answers short enough to speak, and cuts cost per turn.
       systemPrompt: SYSTEM_PROMPT,
-      // Run from the home directory so project-scoped MCP servers don't shadow
-      // the global ones, and so file tools have a sane root.
-      cwd: homedir(),
+      // Run from a workspace of JARVIS's own rather than the home directory.
+      // Project-scoped MCP servers are still picked up (configuredServers reads
+      // them by hand), and the file tools no longer start out inside your
+      // dotfiles. See READ_ROOTS.
+      cwd: WORKSPACE,
+      // In read-only mode the shell and file-writing tools are not offered to
+      // the model at all. canUseTool alone is not enough for these: the CLI
+      // settles some Bash calls itself and never asks (see the note on
+      // canUseTool below), so a read-only `cat` or `curl` could run without
+      // the gate ever hearing about it.
+      disallowedTools: ALLOW_WRITES ? [] : [...WRITE_BUILTINS],
       // No filesystem settings at all. Left to its default the SDK loads
       // ~/.claude/settings.json and settings.local.json exactly as the CLI
       // does — which on a working machine means a bypassPermissions default
@@ -1261,7 +1357,17 @@ wss.on('connection', (socket) => {
       // through a `Bash: echo hello` without asking, and only reaches us for
       // something with a consequence, like a `touch`. So a deny here is
       // reliable; an absence of a call here is not proof nothing ran.
-      canUseTool: async (toolName) => {
+      canUseTool: async (toolName, input) => {
+        if (PATH_TOOLS.has(toolName) && !readPathAllowed(toolName, input)) {
+          console.log(`[jarvis] tool ${toolName} -> deny (outside read roots)`)
+          return {
+            behavior: 'deny',
+            message:
+              'Blocked: that file is outside the folders JARVIS is allowed to' +
+              ' read. Tell the user they can add the folder to the read list' +
+              ' on the machine if they want you to see it.',
+          }
+        }
         const ok = decideTool(toolName)
         console.log(`[jarvis] tool ${toolName} -> ${ok ? 'allow' : 'deny'}`)
         return ok
