@@ -142,6 +142,9 @@ function installedClaude() {
 
 const CLAUDE_PATH = installedClaude()
 
+const MCP_DEBUG_FILE =
+  process.env.JARVIS_DEBUG_MCP === '1' ? join(homedir(), '.jarvis', 'mcp-debug.log') : null
+
 /**
  * Huginn's write tools (run, create, change, pause) on their own switch, so
  * standing automations can be managed by voice without also handing the agent
@@ -1156,6 +1159,7 @@ if (HOST === '127.0.0.1') {
 
 console.log(`[jarvis] bridge listening on ws://localhost:${PORT} (${HOST}${HOST === '127.0.0.1' ? ' + ::1' : ''})`)
 console.log(`[jarvis] agent runs on ${CLAUDE_PATH ?? 'the Claude Code bundled with the SDK'}`)
+if (MCP_DEBUG_FILE) console.log(`[jarvis] MCP debug log -> ${MCP_DEBUG_FILE}`)
 if (!['127.0.0.1', '::1', 'localhost'].includes(HOST)) {
   console.warn(`[jarvis] WARNING: JARVIS_HOST=${HOST} exposes the agent beyond this machine`)
 }
@@ -1412,6 +1416,9 @@ wss.on('connection', (socket) => {
       // mcpServers above passes them in by hand.
       settingSources: [],
       ...(CLAUDE_PATH ? { pathToClaudeCodeExecutable: CLAUDE_PATH } : {}),
+      // JARVIS_DEBUG_MCP=1 writes the agent's own MCP debug log, for the case
+      // where `claude mcp list` says connected and the agent says otherwise.
+      ...(MCP_DEBUG_FILE ? { debugFile: MCP_DEBUG_FILE } : {}),
       // Stated explicitly, and it has to be.
       //
       // With no `model` here the SDK falls back to its own default, which on
