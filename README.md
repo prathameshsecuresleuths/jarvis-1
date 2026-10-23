@@ -191,6 +191,27 @@ chose.
 
 ---
 
+## Google Calendar
+
+Connectors added to your claude.ai account (Gmail, Calendar, Slack…) are not
+visible to the Agent SDK this bridge runs on; it only sees MCP servers set up in
+Claude Code on this computer. Google does not allow automatic client sign-up, so
+Calendar needs an OAuth client of your own, once:
+
+1. In [Google Cloud console](https://console.cloud.google.com/) create a project,
+   then enable the **Google Calendar API** (and, if offered, the Calendar MCP API).
+2. *Google Auth Platform → Branding*: fill the app name and your email.
+   *Audience*: External, and add yourself as a test user.
+3. *Clients → Create client → Desktop app*. Keep the client ID and secret.
+4. On this computer:
+   ```
+   claude mcp add --scope user --transport http google-calendar https://calendarmcp.googleapis.com/mcp/v1 --client-id <CLIENT_ID> --client-secret --callback-port 8765
+   ```
+   paste the secret when asked, then run `claude`, type `/mcp`, pick
+   google-calendar and sign in with Google.
+5. Restart JARVIS. Reading events works; creating or changing them is held
+   behind `JARVIS_ALLOW_WRITES` like every other write.
+
 ## Controls
 
 | Key / phrase | Does |
@@ -233,6 +254,7 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 | `JARVIS_ALLOW_NO_ORIGIN` | off | Accept connections with no `Origin` header |
 | `JARVIS_FILE_ROOTS` | — | Roots the `/file` endpoint may serve from |
 | `JARVIS_READ_ROOTS` | — | Extra folders (comma-separated) the agent's Read/Glob/Grep may look in, beyond `~/.jarvis/workspace` and the temp dirs |
+| `JARVIS_SLACK_WORKSPACES` | — | `name=TeamID` pairs (comma-separated) so "open the Secure Sleuths Slack" opens the desktop app at that workspace |
 | `JARVIS_VOICE_ID` | — | ElevenLabs voice id |
 | `ELEVENLABS_API_KEY` | — | Optional; enables the ElevenLabs voice + Scribe |
 

@@ -46,13 +46,93 @@ function opener(href) {
   return ['xdg-open', [href]]
 }
 
+/**
+ * The installed Slack app, at a workspace and optionally a channel.
+ *
+ * Slack's deep links only know IDs, not names: a workspace is `T…` (or `E…` on
+ * Enterprise Grid) and a channel or DM is `C…`, `G…` or `D…`. Names the user
+ * uses every day can be mapped once in JARVIS_SLACK_WORKSPACES
+ * ("secure sleuths=T0123ABC,client=T0456DEF"); anything else the model has to
+ * be handed, or read off app.slack.com/client/<team>/<channel> in Chrome.
+ * The IDs are checked against their exact shape, so nothing but a well-formed
+ * slack:// link ever reaches the opener.
+ */
+// Real IDs always carry digits; requiring one keeps a word such as "general"
+// or "testing", upper-cased, from passing for an ID.
+const TEAM_ID = /^[TE](?=[A-Z0-9]*\d)[A-Z0-9]{6,14}$/
+const CHANNEL_ID = /^[CGD](?=[A-Z0-9]*\d)[A-Z0-9]{6,14}$/
+
+function slackWorkspaces() {
+  const map = {}
+  for (const pair of (process.env.JARVIS_SLACK_WORKSPACES ?? '').split(',')) {
+    const at = pair.lastIndexOf('=')
+    if (at < 1) continue
+    const name = pair.slice(0, at).trim().toLowerCase()
+    const id = pair.slice(at + 1).trim().toUpperCase()
+    if (name && TEAM_ID.test(id)) map[name] = id
+  }
+  return map
+}
+
+function slackLink(workspace, channel) {
+  const known = slackWorkspaces()
+  let team = null
+  if (workspace) {
+    const w = String(workspace).trim()
+    team = known[w.toLowerCase()] ?? (TEAM_ID.test(w.toUpperCase()) ? w.toUpperCase() : null)
+    if (!team) return { error: `I don't know the ID for the "${w}" workspace.` }
+  }
+  if (channel) {
+    const c = String(channel).trim().toUpperCase()
+    if (!CHANNEL_ID.test(c)) return { error: 'A channel has to be given by its Slack ID (starts with C, G or D).' }
+    if (!team) return { error: 'A channel needs its workspace too.' }
+    return { href: `slack://channel?team=${team}&id=${c}` }
+  }
+  return { href: team ? `slack://open?team=${team}` : 'slack://open' }
+}
+
+/** Ask on screen, then hand the link to the OS. Shared by both tools. */
+async function confirmAndOpen(ask, title, href, done) {
+  let reply
+  try {
+    reply = await ask('confirm', { title, details: href }, 120_000)
+  } catch {
+    reply = null
+  }
+  if (reply?.ok !== true) {
+    return {
+      content: [{ type: 'text', text: 'The user did not approve it on screen, so nothing was opened. Say so in a few words.' }],
+    }
+  }
+  try {
+    const [cmd, args] = opener(href)
+    // Wait for the process to actually start: a missing opener only
+    // surfaces as an async 'error', and "opened" would otherwise be a lie.
+    await new Promise((resolve, reject) => {
+      const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true })
+      child.once('error', reject)
+      child.once('spawn', () => {
+        child.unref()
+        resolve()
+      })
+    })
+    return { content: [{ type: 'text', text: done }] }
+  } catch (err) {
+    return {
+      isError: true,
+      content: [{ type: 'text', text: `Could not open it: ${err?.message ?? err}` }],
+    }
+  }
+}
+
 export function openServer(ask) {
   return createSdkMcpServer({
     name: 'jarvis_open',
     version: '1.0.0',
     instructions:
       "Opens a web page in the user's own browser on this computer, signed in " +
-      'as them. Use it when they ask you to open, go to or pull up a site.',
+      'as them, or brings up the installed Slack app. Use it when they ask you ' +
+      'to open, go to or pull up a site, or to open Slack.',
     alwaysLoad: true,
     tools: [
       tool(
@@ -73,36 +153,37 @@ export function openServer(ask) {
               content: [{ type: 'text', text: 'That is not a plain http(s) web address, so it was not opened.' }],
             }
           }
-          let reply
-          try {
-            reply = await ask('confirm', { title: 'Open this link in your browser?', details: href }, 120_000)
-          } catch {
-            reply = null
-          }
-          if (reply?.ok !== true) {
-            return {
-              content: [{ type: 'text', text: 'The user did not approve it on screen, so nothing was opened. Say so in a few words.' }],
-            }
-          }
-          try {
-            const [cmd, args] = opener(href)
-            // Wait for the process to actually start: a missing opener only
-            // surfaces as an async 'error', and "opened" would otherwise be a lie.
-            await new Promise((resolve, reject) => {
-              const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true })
-              child.once('error', reject)
-              child.once('spawn', () => {
-                child.unref()
-                resolve()
-              })
-            })
-            return { content: [{ type: 'text', text: `Opened ${href} in the browser.` }] }
-          } catch (err) {
+          return confirmAndOpen(ask, 'Open this link in your browser?', href, `Opened ${href} in the browser.`)
+        },
+      ),
+      tool(
+        'open_slack',
+        'Open the installed Slack desktop app on this computer, optionally at a ' +
+          'workspace and channel. workspace is a name the user has mapped in ' +
+          'JARVIS_SLACK_WORKSPACES or a Slack team ID (T...); channel is a channel ' +
+          'ID (C..., G... or D...), not a name. With no workspace it just brings ' +
+          'Slack up. The user approves it on screen first. This only opens Slack: ' +
+          'you cannot read or scroll inside the desktop app. To READ messages, use ' +
+          'the chrome_* tools on https://app.slack.com instead, where the URL ' +
+          '(app.slack.com/client/<team ID>/<channel ID>) also tells you the IDs.',
+        {
+          workspace: z.string().optional().describe('Mapped workspace name or Slack team ID (T...).'),
+          channel: z.string().optional().describe('Slack channel ID (C..., G... or D...).'),
+        },
+        async ({ workspace, channel }) => {
+          const link = slackLink(workspace, channel)
+          if (link.error) {
+            const known = Object.keys(slackWorkspaces())
             return {
               isError: true,
-              content: [{ type: 'text', text: `Could not open the browser: ${err?.message ?? err}` }],
+              content: [{
+                type: 'text',
+                text: link.error + (known.length ? ` Known workspaces: ${known.join(', ')}.` : ' No workspaces are mapped yet.') +
+                  ' Either open Slack without one and let the user pick, or find the ID from app.slack.com in Chrome.',
+              }],
             }
           }
+          return confirmAndOpen(ask, 'Open Slack?', link.href, 'Slack is opening on the computer.')
         },
       ),
     ],
