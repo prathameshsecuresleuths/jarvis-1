@@ -52,7 +52,8 @@ function opener(href) {
  * Slack's deep links only know IDs, not names: a workspace is `T…` (or `E…` on
  * Enterprise Grid) and a channel or DM is `C…`, `G…` or `D…`. Names the user
  * uses every day can be mapped once in JARVIS_SLACK_WORKSPACES
- * ("secure sleuths=T0123ABC,client=T0456DEF"); anything else the model has to
+ * ("secure sleuths=T0123ABC,client=T0456DEF/C0789GHI", the /C… part being
+ * the channel to land in); anything else the model has to
  * be handed, or read off app.slack.com/client/<team>/<channel> in Chrome.
  * The IDs are checked against their exact shape, so nothing but a well-formed
  * slack:// link ever reaches the opener.
@@ -67,9 +68,11 @@ function slackWorkspaces() {
   for (const pair of (process.env.JARVIS_SLACK_WORKSPACES ?? '').split(',')) {
     const at = pair.lastIndexOf('=')
     if (at < 1) continue
+    // "name=T…" or "name=T…/C…", the second opening at that channel by default.
     const name = pair.slice(0, at).trim().toLowerCase()
-    const id = pair.slice(at + 1).trim().toUpperCase()
-    if (name && TEAM_ID.test(id)) map[name] = id
+    const [team, channel] = pair.slice(at + 1).trim().toUpperCase().split('/')
+    if (!name || !TEAM_ID.test(team)) continue
+    map[name] = { team, channel: channel && CHANNEL_ID.test(channel) ? channel : null }
   }
   return map
 }
@@ -79,8 +82,10 @@ function slackLink(workspace, channel) {
   let team = null
   if (workspace) {
     const w = String(workspace).trim()
-    team = known[w.toLowerCase()] ?? (TEAM_ID.test(w.toUpperCase()) ? w.toUpperCase() : null)
+    const mapped = known[w.toLowerCase()]
+    team = mapped?.team ?? (TEAM_ID.test(w.toUpperCase()) ? w.toUpperCase() : null)
     if (!team) return { error: `I don't know the ID for the "${w}" workspace.` }
+    channel = channel || mapped?.channel
   }
   if (channel) {
     const c = String(channel).trim().toUpperCase()
