@@ -115,18 +115,27 @@ const ALLOW_WRITES = process.env.JARVIS_ALLOW_WRITES === '1'
 function installedClaude() {
   const named = process.env.JARVIS_CLAUDE_PATH
   if (named) return named
-  const exe = process.platform === 'win32' ? 'claude.exe' : 'claude'
+  const win = process.platform === 'win32'
+  const exe = win ? 'claude.exe' : 'claude'
   const dirs = [
     join(homedir(), '.local', 'bin'),
-    ...(process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':'),
+    ...(win && process.env.APPDATA ? [join(process.env.APPDATA, 'npm')] : []),
+    ...(process.env.PATH ?? '').split(win ? ';' : ':'),
   ]
+  const isFile = (p) => {
+    try {
+      return statSync(p).isFile()
+    } catch {
+      return false
+    }
+  }
   for (const dir of dirs) {
     if (!dir) continue
-    const candidate = join(dir, exe)
-    try {
-      // A real file, not the npm .cmd shim, which cannot be spawned directly.
-      if (statSync(candidate).isFile()) return candidate
-    } catch {}
+    if (isFile(join(dir, exe))) return join(dir, exe)
+    // An npm global install on Windows leaves only a claude.cmd shim on PATH,
+    // which cannot be spawned directly; the real binary sits in the package.
+    const pkg = join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', exe)
+    if (win && isFile(pkg)) return pkg
   }
   return undefined
 }
