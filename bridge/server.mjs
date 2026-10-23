@@ -859,7 +859,13 @@ const handleRequest = async (req, res) => {
     const target = asked.searchParams.get('url') ?? ''
     const mode = asked.searchParams.get('mode') === 'live' ? 'live' : 'reader'
     try {
-      const page = await renderPage(target, mode, `http://localhost:${PORT}`)
+      // Images in the reader view load from the bridge, so they must point at
+      // the address the page reached us on: localhost on the PC, the tailnet
+      // name over https when the page is open on a phone via tailscale serve.
+      const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '')
+      const viaTailnet = /\.ts\.net(:\d+)?$/i.test(host)
+      const bridgeOrigin = viaTailnet ? `https://${host}` : `http://localhost:${PORT}`
+      const page = await renderPage(target, mode, bridgeOrigin)
       res.writeHead(200, { ...cors, ...page.headers })
       return res.end(page.body)
     } catch (err) {

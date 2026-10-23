@@ -71,7 +71,16 @@ export const BACKEND: 'bridge' | 'direct' = choice(
  * `wss://` maps to `https://` on its own, which is why this is a prefix swap
  * rather than a hardcoded scheme.
  */
-export const BRIDGE_WS_URL = str(import.meta.env.VITE_BRIDGE_URL) ?? 'ws://localhost:8787'
+//
+// Opened from another device (a phone on the tailnet, through `tailscale serve`)
+// the page is not on localhost, and ws://localhost would be the phone itself.
+// Then the bridge is the same host over https on VITE_REMOTE_BRIDGE_PORT
+// (8443 by default), which is where `tailscale serve --https=8443` puts it.
+const LOCAL_PAGE = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(location.hostname)
+const REMOTE_BRIDGE_PORT = str(import.meta.env.VITE_REMOTE_BRIDGE_PORT) ?? '8443'
+export const BRIDGE_WS_URL =
+  str(import.meta.env.VITE_BRIDGE_URL) ??
+  (LOCAL_PAGE ? 'ws://localhost:8787' : `wss://${location.hostname}:${REMOTE_BRIDGE_PORT}`)
 export const BRIDGE_HTTP_URL = BRIDGE_WS_URL.replace(/^ws/, 'http')
 
 /**

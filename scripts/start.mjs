@@ -107,7 +107,15 @@ process.on('SIGTERM', () => shutdown(0))
 const port = process.env.PORT
 const bridgeEnv = writes ? { JARVIS_ALLOW_WRITES: '1' } : {}
 if (port) {
-  bridgeEnv.JARVIS_ALLOWED_ORIGINS = `http://localhost:${port},http://127.0.0.1:${port}`
+  // Added to, not replacing, whatever the user set — a phone origin from
+  // tailscale serve must survive a custom port.
+  bridgeEnv.JARVIS_ALLOWED_ORIGINS = [
+    process.env.JARVIS_ALLOWED_ORIGINS,
+    `http://localhost:${port}`,
+    `http://127.0.0.1:${port}`,
+  ]
+    .filter(Boolean)
+    .join(',')
   console.log(`  serving the face on port ${port}; the bridge will accept it.\n`)
 }
 
